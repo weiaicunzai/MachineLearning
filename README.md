@@ -1,4 +1,4 @@
-# 網易雲音樂ubuntu安裝包
+# MoCoV1 Pytorch Implementation
 
 
-netease-cloud-music_1.0.0-2_amd64_ubuntu16.04.deb
+
