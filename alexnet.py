@@ -1,8 +1,11 @@
 import torch
+import torchvision
 
 
 def alexnet(num_classes, add_bn=True):
-    model = torch.hub.load('pytorch/vision:v0.10.0', 'alexnet', pretrained=True)
+    #model = torch.hub.load('pytorch/vision:v0.10.0', 'alexnet', pretrained=True)
+    #model = alexnet
+    model = torchvision.models.alexnet(pretrained=True)
     #print(model)
     if add_bn:
         features = []

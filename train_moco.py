@@ -1,13 +1,17 @@
 import argparse
 from functools import partial
+import os
 
 import torch
+import torch.nn as nn
 import torchvision
 from torchvision.datasets import Caltech256
 import torchvision.transforms as transforms
 # torch.utils.data.random_split
-import torch.distributed as dist
 
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 
 from moco import MoCo
 from alexnet import alexnet
@@ -39,6 +43,8 @@ parser.add_argument('--schedule', default=[120, 160], nargs='*', type=int,
                     help='learning rate schedule (when to drop lr by 10x)')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum of SGD solver')
+parser.add_argument('--local_rank', default=0, type=int, 
+                    help='local gpu id')
 #parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     #metavar='W', help='weight decay (default: 1e-4)',
                     #dest='weight_decay')
@@ -76,21 +82,71 @@ args = parser.parse_args()
 #                    help='softmax temperature (default: 0.07)')
 
 
-def train(args, net, train_loader, test_loader):
+def train(args, net, train_loader):
     for epoch in range(args.epochs):
-        print(epoch)
+        # print(epoch)
+        train_loader.sampler.set_epoch(epoch)
+        loss_fn = nn.CrossEntropyLoss()
         for idx, ((img_q, img_k), label) in enumerate(train_loader):
-            #print(idx, len(image), len(label))
-            net(img_q, img_k)
+            #print(idx)
+            #print(img_q.shape)
+        #    #print(idx, len(image), len(label))
+            gpu_idx = torch.distributed.get_rank()
+            #print(gpu_idx, 'dfdfdfdfdfdfdfdf', )
+            #print(img_q.shape, gpu_idx, idx)
+            logits = net(img_q.cuda(), img_k.cuda())
+            labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
+            loss = loss_fn(logits, labels)
+            print(loss)
+            loss.backward()
 
+
+            #print(output.shape)
+
+    # import sys; sys.exit()
+
+# def init_distributed():
+
+#     # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+#     # dist_url = "env://" # default
+
+#     # only works with torch.distributed.launch // torch.run
+#     rank = int(os.environ["RANK"])
+#     # print(rank, 'rank')
+#     world_size = int(os.environ['WORLD_SIZE'])
+#     local_rank = int(os.environ['LOCAL_RANK'])
+#     # print(local_rank)
+
+#     dist.init_process_group(
+#             backend="nccl",
+#             # init_method=dist_url,
+#             world_size=world_size,
+#             rank=rank)
+
+#     # this will make all .cuda() calls work properly
+#     torch.cuda.set_device(local_rank)
+    # synchronizes all the threads to reach this point before moving on
+    # setup_for_distributed(rank == 0)
 
 def main():
 
-    world_size = 3
-    rank = 2
-    dist.init_process_group(backend='nccl', world_size=world_size, rank=rank)
-    print(dist.get_rank())
-    #import sys; sys.exit()
+    # print('here?')
+    # init_distributed()
+    # import sys; sys.exit()
+
+    #world_size = 2
+    #rank = 0
+    rank = int(os.environ["RANK"])
+    # print(rank, 'rank')
+    world_size = int(os.environ['WORLD_SIZE'])
+    local_rank = int(os.environ['LOCAL_RANK'])
+    dist.init_process_group(
+        backend='nccl', 
+        # init_method = "env://",
+        world_size=world_size, 
+        rank=rank)
+    # print(dist.get_rank())
+    # import sys; sys.exit()
 
     
 
@@ -127,34 +183,58 @@ def main():
 
 
 
-    print(train_transform)
+    # print(train_transform)
     dataset = Caltech256(
         'data', 
         transform=partial(two_crop, trans=train_transform),
-        download=True
+        download=True,
     )
-    print(len(dataset))
 
-    train_num = int(len(dataset) * 0.8)
-    train_set, test_set = torch.utils.data.random_split(
+    #for i in dataset:
+    #    print(i[0][0].shape, i[0][1].shape, i[1])
+
+    # import sys; sys.exit()
+        #print(len(i))
+        #print(i[0].shape, i)
+    # print(len(dataset))
+
+    # train_num = int(len(dataset) * 0.8)
+    #train_set, test_set = torch.utils.data.random_split(
+    #    dataset, 
+    #    [train_num, len(dataset) - train_num],
+    #    generator=torch.Generator().manual_seed(42))
+
+    # train_loader = torch.utils.data.DataLoader(train_set, batch_size=10)
+    # test_loader = torch.utils.data.DataLoader(test_set)
+    sampler = DistributedSampler(dataset)
+    train_loader = torch.utils.data.DataLoader(
         dataset, 
-        [train_num, len(dataset) - train_num],
-        generator=torch.Generator().manual_seed(42))
+        batch_size=2 ** 4, 
+        pin_memory=True, 
+        drop_last=True,
+        num_workers=8, 
+        sampler=sampler)
 
-    train_loader = torch.utils.data.DataLoader(train_set)
-    test_loader = torch.utils.data.DataLoader(test_set)
+    torch.cuda.set_device(local_rank)
 
 
     #net = alexnet(128)
     net = MoCo(alexnet)
+    # print(rank, 'ranking....')
+    net = torch.nn.SyncBatchNorm.convert_sync_batchnorm(net).cuda()
+    # net
+    net = DDP(net, device_ids=[rank])
+    # print(net)
+    # print(local_rank, rank, 'dffffff', next(net.parameters()).device)
+    # import sys; sys.exit()
 
-    train(args, net, train_loader, test_loader)
+    train(args, net, train_loader)
 
 
     #for epoch in range()
 
 if __name__ == '__main__':
-    import torchvision.models as models
-    net = models.__dict__['resnet50']
+    # import torchvision.models as models
+    # net = models.__dict__['resnet50']
     # print(net)
     main()
